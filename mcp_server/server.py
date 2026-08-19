@@ -422,11 +422,97 @@ async def generate_waste_report(ctx: Context, branch_id: int, date_from: str, da
 
 
 # ---------------------------------------------------------------------
+# Checkpoint / HITL / Failure Ticket Management Tools
+# ---------------------------------------------------------------------
+
+@mcp.tool()
+def get_run_status(run_id: str) -> dict:
+    """Return the current status and latest checkpoint of a state-graph run.
+
+    Available to all authenticated staff.
+    """
+    try:
+        return _tools.get_run_status(SESSION, run_id)
+    except _tools.ToolError as e:
+        return _as_error(e)
+
+
+@mcp.tool()
+def list_run_checkpoints(run_id: str) -> list[dict] | dict:
+    """List all persisted checkpoints for a run in chronological order.
+
+    Available to all authenticated staff.
+    """
+    try:
+        return _tools.list_run_checkpoints(SESSION, run_id)
+    except _tools.ToolError as e:
+        return _as_error(e)
+
+
+@mcp.tool()
+def list_hitl_tasks(status: str | None = None) -> list[dict] | dict:
+    """List all human-in-the-loop tasks, optionally filtered by status.
+
+    status must be one of: pending, approved, rejected, resolved.
+    Available to all authenticated staff.
+    """
+    try:
+        return _tools.list_hitl_tasks(SESSION, status)
+    except _tools.ToolError as e:
+        return _as_error(e)
+
+
+@mcp.tool()
+def approve_hitl_task(task_id: str, decision_data: dict | None = None) -> dict:
+    """Approve a pending human-in-the-loop task. Manager-only.
+
+    Optionally supply a decision_data dict with any context for the resumed run.
+    """
+    try:
+        return _tools.approve_hitl_task(SESSION, task_id, decision_data)
+    except (_tools.AuthorizationError, _tools.ToolError) as e:
+        return _as_error(e)
+
+
+@mcp.tool()
+def reject_hitl_task(task_id: str, decision_data: dict | None = None) -> dict:
+    """Reject a pending human-in-the-loop task. Manager-only."""
+    try:
+        return _tools.reject_hitl_task(SESSION, task_id, decision_data)
+    except (_tools.AuthorizationError, _tools.ToolError) as e:
+        return _as_error(e)
+
+
+@mcp.tool()
+def list_failure_tickets(status: str | None = None) -> list[dict] | dict:
+    """List all failure tickets, optionally filtered by status.
+
+    status must be one of: open, investigating, resolved.
+    Available to all authenticated staff.
+    """
+    try:
+        return _tools.list_failure_tickets(SESSION, status)
+    except _tools.ToolError as e:
+        return _as_error(e)
+
+
+@mcp.tool()
+def resolve_failure(ticket_id: str, resolution: str) -> dict:
+    """Resolve an open or investigating failure ticket with a resolution note. Manager-only."""
+    try:
+        return _tools.resolve_failure(SESSION, ticket_id, resolution)
+    except (_tools.AuthorizationError, _tools.ToolError) as e:
+        return _as_error(e)
+
+
+# ---------------------------------------------------------------------
 # Protocol Concern: DEFENSIVE TOOL DESIGN (Schema hardening)
 # Hardens generated schemas with enums & additionalProperties: false.
 # ---------------------------------------------------------------------
 _ENUM_CONSTRAINTS = {
     "get_supplier_orders": {"status": ["pending", "delivered", "cancelled"]},
+    "list_hitl_tasks": {"status": ["pending", "approved", "rejected", "resolved"]},
+    "list_failure_tickets": {"status": ["open", "investigating", "resolved"]},
     "write_off_inventory": {
         "reason": ["spoiled_before_use", "past_expiry", "damaged_in_delivery", "prep_error", "other"]
     },
@@ -439,6 +525,13 @@ _ALL_TOOL_NAMES = (
     "write_off_inventory",
     "generate_waste_report",
     "elevate_to_manager",
+    "get_run_status",
+    "list_run_checkpoints",
+    "list_hitl_tasks",
+    "approve_hitl_task",
+    "reject_hitl_task",
+    "list_failure_tickets",
+    "resolve_failure",
 )
 
 

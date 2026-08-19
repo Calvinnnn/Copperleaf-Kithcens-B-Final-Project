@@ -197,3 +197,170 @@ def write_off_inventory(session: Session, item_id: int, quantity: float, reason:
         "new_stock_level": new_stock_level,
         "recorded_by": session.full_name,
     }
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Checkpoint Management Tool Functions
+# ─────────────────────────────────────────────────────────────────────────────
+
+try:
+    from planning_lab.checkpointing import (
+        get_checkpoint as _get_checkpoint,
+        get_latest_checkpoint as _get_latest_checkpoint,
+        get_run_checkpoints as _get_run_checkpoints,
+        get_hitl_tasks as _get_hitl_tasks,
+        submit_hitl_decision as _submit_hitl_decision,
+        get_failure_tickets as _get_failure_tickets,
+        resolve_failure_ticket as _resolve_failure_ticket,
+    )
+except ImportError:
+    import sys, os
+    sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
+    from planning_lab.checkpointing import (
+        get_checkpoint as _get_checkpoint,
+        get_latest_checkpoint as _get_latest_checkpoint,
+        get_run_checkpoints as _get_run_checkpoints,
+        get_hitl_tasks as _get_hitl_tasks,
+        submit_hitl_decision as _submit_hitl_decision,
+        get_failure_tickets as _get_failure_tickets,
+        resolve_failure_ticket as _resolve_failure_ticket,
+    )
+
+
+def get_run_status(session: Session, run_id: str) -> dict:
+    """Return the current status and latest checkpoint for a state-graph run.
+
+    Accessible by all authenticated staff — read-only.
+    """
+    chk = _get_latest_checkpoint(run_id)
+    if not chk:
+        raise ToolError(f"No checkpoint found for run_id={run_id!r}")
+    return {
+        "run_id": chk.run_id,
+        "graph_id": chk.graph_id,
+        "status": chk.status,
+        "current_state": chk.state_name,
+        "checkpoint_version": chk.checkpoint_version,
+        "completed_steps": chk.completed_steps,
+        "updated_at": chk.updated_at,
+    }
+
+
+def list_run_checkpoints(session: Session, run_id: str) -> list[dict]:
+    """Return all persisted checkpoints for a run in version order.
+
+    Accessible by all authenticated staff — read-only.
+    """
+    checkpoints = _get_run_checkpoints(run_id)
+    if not checkpoints:
+        raise ToolError(f"No checkpoints found for run_id={run_id!r}")
+    return [
+        {
+            "checkpoint_id": c.checkpoint_id,
+            "checkpoint_version": c.checkpoint_version,
+            "state_name": c.state_name,
+            "status": c.status,
+            "completed_steps": c.completed_steps,
+            "created_at": c.created_at,
+            "updated_at": c.updated_at,
+        }
+        for c in checkpoints
+    ]
+
+
+def list_hitl_tasks(session: Session, status: Optional[str] = None) -> list[dict]:
+    """Return all HITL tasks, optionally filtered by status (pending, approved, rejected, resolved).
+
+    Accessible by all authenticated staff.
+    """
+    tasks = _get_hitl_tasks(status=status)
+    return [
+        {
+            "hitl_task_id": t.hitl_task_id,
+            "run_id": t.run_id,
+            "graph_id": t.graph_id,
+            "checkpoint_id": t.checkpoint_id,
+            "state_name": t.state_name,
+            "reason": t.reason,
+            "status": t.status,
+            "decision": t.decision,
+            "created_at": t.created_at,
+            "resolved_at": t.resolved_at,
+        }
+        for t in tasks
+    ]
+
+
+def approve_hitl_task(session: Session, task_id: str, decision_data: Optional[dict] = None) -> dict:
+    """Submit an 'approved' decision for a pending HITL task.
+
+    Manager-only: requires the caller to have manager role.
+    """
+    if session.role != "manager":
+        raise AuthorizationError("Only managers may approve HITL tasks.")
+    task = _submit_hitl_decision(task_id, "approved", decision_data or {})
+    return {
+        "hitl_task_id": task.hitl_task_id,
+        "status": task.status,
+        "decision": task.decision,
+        "resolved_at": task.resolved_at,
+        "resolved_by": session.full_name,
+    }
+
+
+def reject_hitl_task(session: Session, task_id: str, decision_data: Optional[dict] = None) -> dict:
+    """Submit a 'rejected' decision for a pending HITL task.
+
+    Manager-only: requires the caller to have manager role.
+    """
+    if session.role != "manager":
+        raise AuthorizationError("Only managers may reject HITL tasks.")
+    task = _submit_hitl_decision(task_id, "rejected", decision_data or {})
+    return {
+        "hitl_task_id": task.hitl_task_id,
+        "status": task.status,
+        "decision": task.decision,
+        "resolved_at": task.resolved_at,
+        "resolved_by": session.full_name,
+    }
+
+
+def list_failure_tickets(session: Session, status: Optional[str] = None) -> list[dict]:
+    """Return all failure tickets, optionally filtered by status (open, investigating, resolved).
+
+    Accessible by all authenticated staff.
+    """
+    tickets = _get_failure_tickets(status=status)
+    return [
+        {
+            "failure_ticket_id": t.failure_ticket_id,
+            "run_id": t.run_id,
+            "graph_id": t.graph_id,
+            "checkpoint_id": t.checkpoint_id,
+            "failed_node": t.failed_node,
+            "error_type": t.error_type,
+            "error_message": t.error_message,
+            "status": t.status,
+            "resolution": t.resolution,
+            "created_at": t.created_at,
+            "resolved_at": t.resolved_at,
+        }
+        for t in tickets
+    ]
+
+
+def resolve_failure(session: Session, ticket_id: str, resolution: str) -> dict:
+    """Mark a failure ticket as resolved with the given resolution note.
+
+    Manager-only: requires the caller to have manager role.
+    """
+    if session.role != "manager":
+        raise AuthorizationError("Only managers may resolve failure tickets.")
+    ticket = _resolve_failure_ticket(ticket_id, resolution)
+    return {
+        "failure_ticket_id": ticket.failure_ticket_id,
+        "status": ticket.status,
+        "resolution": ticket.resolution,
+        "resolved_at": ticket.resolved_at,
+        "resolved_by": session.full_name,
+    }
