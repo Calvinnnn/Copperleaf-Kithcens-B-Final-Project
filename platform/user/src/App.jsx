@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
 import { Bot, MessageSquare, Send, CheckCircle2, Clock, User, AlertTriangle, Loader2, AlertCircle, Trash2  } from 'lucide-react';
+import { sendMessageToAgent } from './services/chatService';
 
 const AGENTS = [
   {
@@ -67,65 +68,43 @@ React.useEffect(() => {
 
   const currentMessages = conversations[selectedAgent.id] || [];
 
-  const handleSendMessage = (e) => {
-    e.preventDefault();
-    if (!inputMessage.trim() || runStatus === 'IN_PROGRESS') return;
+  const handleSendMessage = async (e) => {
+  e.preventDefault();
+  if (!inputMessage.trim() || runStatus === 'IN_PROGRESS') return;
 
-    const userMsg = {
-      id: Date.now(),
-      sender: 'user',
-      text: inputMessage,
+  const userMsg = {
+    id: Date.now(),
+    sender: 'user',
+    text: inputMessage,
+  };
+
+  setConversations((prev) => ({
+    ...prev,
+    [selectedAgent.id]: [...(prev[selectedAgent.id] || []), userMsg],
+  }));
+
+  const currentText = inputMessage;
+  setInputMessage('');
+  setRunStatus('IN_PROGRESS');
+
+  try {
+    const response = await sendMessageToAgent(selectedAgent.id, currentText);
+    setRunStatus(response.status);
+
+    const agentMsg = {
+      id: Date.now() + 1,
+      sender: 'agent',
+      text: response.reply,
     };
 
     setConversations((prev) => ({
       ...prev,
-      [selectedAgent.id]: [...prev[selectedAgent.id], userMsg],
+      [selectedAgent.id]: [...(prev[selectedAgent.id] || []), agentMsg],
     }));
-
-    const currentText = inputMessage;
-    setInputMessage('');
-    
-    // محاكاة بدء الـ Graph Execution
-    setRunStatus('IN_PROGRESS');
-
-    // اختبار محاكاة لسيناريو الـ HITL أو الـ Failure بناءً على الكلمات المفتاحية (للتجربة)
-    setTimeout(() => {
-      if (currentText.toLowerCase().includes('approve') || currentText.toLowerCase().includes('buy')) {
-        setRunStatus('WAITING_FOR_APPROVAL');
-        const agentMsg = {
-          id: Date.now() + 1,
-          sender: 'agent',
-          text: `⚠️ Purchase request exceeds $500 threshold. Execution paused: Waiting for Admin Approval (HITL Triggered).`,
-        };
-        setConversations((prev) => ({
-          ...prev,
-          [selectedAgent.id]: [...prev[selectedAgent.id], agentMsg],
-        }));
-      } else if (currentText.toLowerCase().includes('error') || currentText.toLowerCase().includes('fail')) {
-        setRunStatus('FAILED');
-        const agentMsg = {
-          id: Date.now() + 1,
-          sender: 'agent',
-          text: `🚨 Tool Execution Failed! Graph execution interrupted and Failure Ticket #TK-104 created.`,
-        };
-        setConversations((prev) => ({
-          ...prev,
-          [selectedAgent.id]: [...prev[selectedAgent.id], agentMsg],
-        }));
-      } else {
-        setRunStatus('IDLE');
-        const agentMsg = {
-          id: Date.now() + 1,
-          sender: 'agent',
-          text: `[Mock Response from ${selectedAgent.name}]: Order processed successfully!`,
-        };
-        setConversations((prev) => ({
-          ...prev,
-          [selectedAgent.id]: [...prev[selectedAgent.id], agentMsg],
-        }));
-      }
-    }, 1500);
-  };
+  } catch (error) {
+    setRunStatus('FAILED');
+  }
+};
   const handleClearHistory = () => {
   if (window.confirm(`Are you sure you want to clear chat history for ${selectedAgent.name}?`)) {
     setConversations((prev) => ({
