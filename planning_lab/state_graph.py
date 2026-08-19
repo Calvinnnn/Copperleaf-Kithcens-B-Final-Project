@@ -171,11 +171,11 @@ class StateGraphRunner:
                     current_state = transitions[current_state]
                     continue
 
-            node_fn = self.graph.nodes.get(current_state)
-            if not node_fn:
-                raise ValueError(f"State node {current_state!r} not found in graph.")
-
             try:
+                node_fn = self.graph.nodes.get(current_state)
+                if not node_fn:
+                    raise ValueError(f"State node {current_state!r} not found in graph.")
+
                 # Execute current state node
                 next_state, updated_data = node_fn(state_data)
 
