@@ -17,6 +17,7 @@ DB_PATH = DB_DIR / "copperleaf.db"
 SCHEMA_PATH = DB_DIR / "schema.sql"
 SEED_PATH = DB_DIR / "seed.sql"
 MEMORY_MIGRATE_PATH = DB_DIR / "migrate_memory.sql"
+CHECKPOINT_MIGRATE_PATH = DB_DIR / "migrate_checkpoint.sql"
 
 
 def build():
@@ -32,8 +33,11 @@ def build():
         if MEMORY_MIGRATE_PATH.exists():
             conn.executescript(MEMORY_MIGRATE_PATH.read_text())
             print(f"Applied memory migration from {MEMORY_MIGRATE_PATH.name}")
+        if CHECKPOINT_MIGRATE_PATH.exists():
+            conn.executescript(CHECKPOINT_MIGRATE_PATH.read_text())
+            print(f"Applied checkpoint migration from {CHECKPOINT_MIGRATE_PATH.name}")
         conn.commit()
-        print(f"Built {DB_PATH} from schema.sql + seed.sql + migrate_memory.sql")
+        print(f"Built {DB_PATH} from schema.sql + seed.sql + migrate_memory.sql + migrate_checkpoint.sql")
     finally:
         conn.close()
 
