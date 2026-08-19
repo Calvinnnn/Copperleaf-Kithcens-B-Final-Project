@@ -248,8 +248,11 @@ def node_waiting_for_supplier(state: Dict[str, Any]) -> Tuple[str, Dict[str, Any
     hitl_decision = state.get("_hitl_decision")
     if not supplier_response and hitl_decision and hitl_decision.get("decision_data"):
         d_data = hitl_decision["decision_data"]
-        if isinstance(d_data, dict) and "_supplier_response" in d_data:
-            supplier_response = d_data["_supplier_response"]
+        if isinstance(d_data, dict):
+            if "_supplier_response" in d_data:
+                supplier_response = d_data["_supplier_response"]
+            elif "decision" in d_data:
+                supplier_response = d_data
 
     if not supplier_response:
         raise HITLRequestException(
