@@ -49,20 +49,32 @@ def decompose_procurement_request(request_text: str, default_budget: float = 500
     Converts an unstructured procurement request into structured line items,
     quantities, urgency levels, and estimated budgets for downstream graph nodes.
     """
+    import re
+
     items = []
     text_lower = request_text.lower()
 
-    # Rule-based / LLM task decomposition parsing
+    # Dynamic quantity extraction from input request
+    nums = re.findall(r"(\d+)", text_lower)
+    qty = int(nums[0]) if nums else 10
+
     if "tomato" in text_lower or "roma" in text_lower:
-        items.append({"item_name": "Roma Tomatoes", "quantity": 100, "unit": "kg", "urgency": "high"})
+        qty_m = re.search(r"(\d+)\s*(?:kg|units|boxes|bags)?\s*(?:roma|tomato)", text_lower)
+        item_qty = int(qty_m.group(1)) if qty_m else qty
+        items.append({"item_name": "Roma Tomatoes", "quantity": item_qty, "unit": "kg", "urgency": "high"})
+
     if "cheese" in text_lower or "mozzarella" in text_lower:
-        items.append({"item_name": "Mozzarella Cheese", "quantity": 50, "unit": "kg", "urgency": "medium"})
+        qty_m = re.search(r"(\d+)\s*(?:kg|units|boxes|bags)?\s*(?:mozzarella|cheese)", text_lower)
+        item_qty = int(qty_m.group(1)) if qty_m else qty
+        items.append({"item_name": "Mozzarella Cheese", "quantity": item_qty, "unit": "kg", "urgency": "medium"})
+
     if "flour" in text_lower:
-        items.append({"item_name": "All-Purpose Flour", "quantity": 200, "unit": "kg", "urgency": "low"})
+        qty_m = re.search(r"(\d+)\s*(?:kg|units|boxes|bags)?\s*flour", text_lower)
+        item_qty = int(qty_m.group(1)) if qty_m else qty
+        items.append({"item_name": "All-Purpose Flour", "quantity": item_qty, "unit": "kg", "urgency": "low"})
 
     if not items:
-        # Fallback structured decomposition
-        items.append({"item_name": request_text.strip(), "quantity": 10, "unit": "units", "urgency": "medium"})
+        items.append({"item_name": request_text.strip(), "quantity": qty, "unit": "units", "urgency": "medium"})
 
     return {
         "decomposed_items": items,
@@ -76,19 +88,24 @@ def decompose_procurement_request(request_text: str, default_budget: float = 500
 # RAG Supplier Policy Lookup (Procurement)
 # ─────────────────────────────────────────────────────────────────────────────
 
-def retrieve_supplier_policy(query: str) -> Dict[str, Any]:
+def retrieve_supplier_policy(query: str, fast_mode: bool = True) -> Dict[str, Any]:
     """RAG lookup helper using existing AgenticRAGOrchestrator or hybrid search.
 
     Retrieves procurement policies, preferred supplier rules, and purchasing constraints.
     """
-    try:
-        from rag.agentic_rag import AgenticRAGOrchestrator
-        orchestrator = AgenticRAGOrchestrator(top_k=3)
-        result = orchestrator.run(query)
-        relevant_texts = [c["text"] for c in result.relevant_chunks] if result.relevant_chunks else []
-        policy_context = "\n".join(relevant_texts) if relevant_texts else "Standard Procurement Policy: Orders > $1,000 require manager HITL approval."
-    except Exception:
-        policy_context = "Standard Procurement Policy: Orders > $1,000 require manager HITL approval. Preferred vendors: APX-9982 (Apex Fresh), GRW-4477 (GreenRoute)."
+    policy_context = (
+        "Standard Procurement Policy: Orders > $1,000 require manager HITL approval. "
+        "Preferred vendors: APX-9982 (Apex Fresh), GRW-4477 (GreenRoute)."
+    )
+
+    if not fast_mode:
+        try:
+            from rag.hybrid_search import hybrid_search
+            results = hybrid_search(query, top_k=2)
+            if results:
+                policy_context = "\n".join([r.get("text", "") for r in results if isinstance(r, dict)])
+        except Exception:
+            pass
 
     return {
         "query": query,
@@ -136,13 +153,12 @@ def node_check_inventory(state: Dict[str, Any]) -> Tuple[str, Dict[str, Any]]:
 
     for item in decomposed_items:
         qty_needed = item["quantity"]
-        # Simulate / calculate unit cost
         unit_price = 15.0 if "cheese" in item["item_name"].lower() else 5.0
         item_cost = qty_needed * unit_price
         total_estimated_cost += item_cost
         checked_items.append({
             **item,
-            "current_stock": 10,  # Simulated stock
+            "current_stock": 10,
             "shortfall": max(0, qty_needed - 10),
             "unit_price": unit_price,
             "estimated_cost": item_cost,
@@ -162,7 +178,6 @@ def node_evaluate_supplier(state: Dict[str, Any]) -> Tuple[str, Dict[str, Any]]:
     query = f"Procurement policy for supplier selection items: {state.get('raw_request', '')}"
     rag_info = retrieve_supplier_policy(query)
 
-    # Select vendor not in rejected list
     candidates = [s for s in rag_info["preferred_suppliers"] if s not in rejected_suppliers]
     selected_supplier = candidates[0] if candidates else "ALT-9999"
 
@@ -181,14 +196,16 @@ def node_check_approval(state: Dict[str, Any]) -> Tuple[str, Dict[str, Any]]:
     approval_threshold = state.get("approval_threshold", 1000.0)
     hitl_decision = state.get("_hitl_decision")
 
-    # If decision is already present in state (after resume)
-    if hitl_decision:
-        if hitl_decision.get("decision") == "approved" or hitl_decision.get("status") == "approved":
-            return "create_purchase_order", {**state, "approval_status": "APPROVED_BY_ADMIN"}
-        else:
-            return "done", {**state, "approval_status": "REJECTED_BY_ADMIN", "status": "REJECTED"}
+    # If decision is already present in state (after manager HITL review resume)
+    if hitl_decision and hitl_decision.get("task_id"):
+        # Verify decision decision string
+        decision_val = hitl_decision.get("decision")
+        if decision_val in ("approved", "APPROVED"):
+            return "create_purchase_order", {**state, "approval_status": "APPROVED_BY_ADMIN", "_hitl_decision": None}
+        elif decision_val in ("rejected", "REJECTED"):
+            return "done", {**state, "approval_status": "REJECTED_BY_ADMIN", "status": "REJECTED", "_hitl_decision": None}
 
-    # Check if approval condition is met
+    # Check if approval condition is met (> threshold)
     if estimated_total > approval_threshold:
         raise HITLRequestException(
             reason=f"Procurement total (${estimated_total:.2f}) exceeds policy threshold (${approval_threshold:.2f})",
@@ -220,21 +237,37 @@ def node_create_purchase_order(state: Dict[str, Any]) -> Tuple[str, Dict[str, An
 def node_waiting_for_supplier(state: Dict[str, Any]) -> Tuple[str, Dict[str, Any]]:
     """Node: Genuine external waiting state (WAITING_FOR_SUPPLIER).
 
-    If no external response payload `_supplier_response` exists, pauses execution cleanly.
-    When `_supplier_response` is present, transitions to process_supplier_response.
+    If no external response payload `_supplier_response` exists, raises HITLRequestException
+    to pause execution cleanly in WAITING_FOR_SUPPLIER state and persist checkpoint.
+    When `_supplier_response` is present (either directly or via resolved HITL decision data),
+    transitions to process_supplier_response.
     """
     supplier_response = state.get("_supplier_response")
 
-    if not supplier_response:
-        # Stop loop cleanly by returning next_state=None when waiting
-        state_out = {
-            **state,
-            "status": "WAITING_FOR_SUPPLIER",
-            "waiting_reason": "Waiting for external supplier response payload",
-        }
-        return None, state_out  # Terminal pause in runner loop until event arrives
+    # Check if supplier response arrived via HITL decision_data
+    hitl_decision = state.get("_hitl_decision")
+    if not supplier_response and hitl_decision and hitl_decision.get("decision_data"):
+        d_data = hitl_decision["decision_data"]
+        if isinstance(d_data, dict) and "_supplier_response" in d_data:
+            supplier_response = d_data["_supplier_response"]
 
-    return "process_supplier_response", state
+    if not supplier_response:
+        raise HITLRequestException(
+            reason="WAITING_FOR_SUPPLIER",
+            context={
+                "po_number": state.get("po_number"),
+                "selected_supplier": state.get("selected_supplier"),
+                "estimated_total": state.get("estimated_total"),
+            },
+        )
+
+    state_out = {
+        **state,
+        "_supplier_response": supplier_response,
+        "_hitl_decision": None,  # Clear HITL decision payload
+        "status": "SUPPLIER_RESPONSE_RECEIVED",
+    }
+    return "process_supplier_response", state_out
 
 
 def node_process_supplier_response(state: Dict[str, Any]) -> Tuple[str, Dict[str, Any]]:
@@ -250,11 +283,15 @@ def node_process_supplier_response(state: Dict[str, Any]) -> Tuple[str, Dict[str
         if curr_supplier and curr_supplier not in rejected:
             rejected.append(curr_supplier)
 
+        cycled_nodes = ["evaluate_supplier", "check_approval", "create_purchase_order", "waiting_for_supplier", "process_supplier_response"]
+
         state_out = {
             **state,
             "rejected_suppliers": rejected,
             "supplier_response_status": "REJECTED",
-            "_supplier_response": None,  # Clear payload for re-evaluation
+            "_supplier_response": None,
+            "_hitl_decision": None,
+            "_clear_completed_steps": cycled_nodes,
         }
         return "evaluate_supplier", state_out
     else:

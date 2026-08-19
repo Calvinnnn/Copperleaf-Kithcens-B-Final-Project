@@ -185,6 +185,15 @@ class StateGraphRunner:
                     updated_data["_transitions"] = {}
                 updated_data["_transitions"][current_state] = next_state
 
+                # Process any requested cleared steps for cyclic graph loops
+                if "_clear_completed_steps" in updated_data:
+                    clear_list = updated_data.pop("_clear_completed_steps")
+                    completed_steps = [s for s in completed_steps if s not in clear_list]
+                    transitions = updated_data.get("_transitions", {})
+                    for key in clear_list:
+                        transitions.pop(key, None)
+                    updated_data["_transitions"] = transitions
+
                 state_data = updated_data
                 current_state = next_state
 
