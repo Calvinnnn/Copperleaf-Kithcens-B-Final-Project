@@ -86,15 +86,15 @@ class AgenticRAGOrchestrator:
     """
 
     def __init__(
-        self,
-        verifier: Optional[SelfRAGVerifier] = None,
-        top_k: int = 5,
-        max_retry_attempts: int = 2,
-        relevance_threshold: float = 0.4,
-        support_threshold: float = 0.4,
-        use_hybrid_search: bool = True,
-        where_filter: Optional[Dict[str, Any]] = None,
-    ) -> None:
+    self,
+    verifier: Optional[SelfRAGVerifier] = None,
+    top_k: int = 5,
+    max_retry_attempts: int = 2,
+    relevance_threshold: float = 0.0,  # اجعلها 0.0 لإلغاء استبعاد أي Chunk قريب من المعنى
+    support_threshold: float = 0.0,
+    use_hybrid_search: bool = True,
+    where_filter: Optional[Dict[str, Any]] = None,
+) -> None:
         """Initialize AgenticRAGOrchestrator.
 
         Args:
@@ -116,13 +116,11 @@ class AgenticRAGOrchestrator:
         self._where = where_filter
 
     def _retrieve(self, query: str, top_k: int) -> List[Dict[str, Any]]:
-        """Run retrieval - requires ChromaDB and sentence-transformers.
-
-        Falls back gracefully if vector store is not populated yet.
-        """
         try:
             from rag.retriever import retrieve as vector_retrieve
             chunks = vector_retrieve(query, top_k=top_k, where=self._where)
+
+            print(f"--- DEBUG: Raw vector_retrieve returned {len(chunks)} chunks ---")
 
             if self._use_hybrid and chunks:
                 from rag.hybrid_search import hybrid_search
@@ -130,8 +128,9 @@ class AgenticRAGOrchestrator:
 
             return chunks
         except Exception as exc:
-            return []  # Graceful no-op when knowledge base not yet built
-
+            # اطبع الخطأ للتعرف عليه فوراً
+            print(f"--- RETRIEVAL ERROR: {exc} ---")
+            return []
     def _filter_relevant(
         self, query: str, chunks: List[Dict[str, Any]]
     ) -> List[Dict[str, Any]]:
@@ -144,19 +143,29 @@ class AgenticRAGOrchestrator:
         return relevant
 
     def _build_context(self, chunks: List[Dict[str, Any]]) -> str:
-        """Format retrieved chunks into a prompt context block."""
+        """Format retrieved chunks into a strict prompt context block."""
         if not chunks:
-            return "[NO RELEVANT CONTEXT RETRIEVED]"
+            return (
+                "CRITICAL DIRECTIVE: No relevant documents were found in the Knowledge Base. "
+                "You MUST state: 'I could not find relevant information in the company's official policy documents.' "
+                "Do NOT provide general information, tax rules, or outside knowledge."
+            )
 
-        lines = ["[RETRIEVED KNOWLEDGE BASE CONTEXT]"]
+        lines = [
+            "CRITICAL DIRECTIVE: You are an AI Assistant for Copperleaf Kitchens.",
+            "Answer the user's query STRICTLY using ONLY the official context below.",
+            "Do NOT use external knowledge, tax guidelines, or general industry rules.",
+            "If the answer is not explicitly written in the text below, say you do not know based on the documents.",
+            "\n[RETRIEVED KNOWLEDGE BASE CONTEXT]"
+        ]
+        
         for i, chunk in enumerate(chunks, 1):
             src = chunk.get("metadata", {}).get("source", "unknown")
             page = chunk.get("metadata", {}).get("page", "?")
             lines.append(f"\n--- Source {i}: {src} (page {page}) ---")
-            lines.append(chunk["text"])
+            lines.append(chunk.get("text", ""))
 
         return "\n".join(lines)
-
     def run(
         self,
         query: str,
@@ -204,7 +213,20 @@ class AgenticRAGOrchestrator:
             current_query = _simple_query_rewrite(query, attempt + 1)
             was_rewritten = True
             trace.append(f"[REWRITE] Low relevance. Reformulated to: '{current_query}'")
-
+        # STEP 3: BUILD CONTEXT
+        # --- أضف سطر الـ Debugging هنا للتأكد من المقاطع المترجعة ---
+        print(f"DEBUG: Number of chunks retrieved -> {len(relevant_chunks or all_retrieved)}")
+        # --------------------------------------------------------
+        # rag/agentic_rag.py (داخل دالة run)
+        # STEP 3: BUILD CONTEXT
+        # تمرير all_retrieved يضمن وصول النصوص المجلوبة إلى الـ Prompt
+        # STEP 3: BUILD CONTEXT
+        # مرر all_retrieved مباشرة لمنع الـ Verifier من حذف النتائج
+        answer_context = self._build_context(all_retrieved)
+        # answer_context = self._build_context(all_retrieved if all_retrieved else relevant_chunks)
+        # استبدل سطر STEP 3 بهذا الكود:
+        # answer_context = self._build_context(all_retrieved)
+        # answer_context = self._build_context(relevant_chunks or all_retrieved)
         # STEP 3: BUILD CONTEXT
         answer_context = self._build_context(relevant_chunks or all_retrieved)
 

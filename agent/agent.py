@@ -441,7 +441,7 @@ if __name__ == "__main__":
           "consolidation + RAG + Self-RAG + existing MCP server tools.")
           
     print("\n=== UnifiedAgent Routing Test ===")
-    unified = UnifiedAgent(llm=ChatMistralAI(api_key="mock", model="mistral-small-latest") if _MCP_SERVER_AVAILABLE else None, api_token="tok_mona_mgr_9f2a")
+    unified = UnifiedAgent(llm=ChatMistralAI(api_key="[ut your api key here]", model="mistral-small-latest") if _MCP_SERVER_AVAILABLE else None, api_token="tok_mona_mgr_9f2a")
     print("\nUser: 'Tell me about the corporate structure'")
     ans1 = unified.handle_request("Tell me about the corporate structure")
     print(f"Result: {ans1}")

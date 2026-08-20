@@ -13,7 +13,11 @@ from chromadb.config import Settings
 from rag.chunking import create_chunks
 from rag.embeddings import create_embeddings
 
+import os
 
+# استخدام مسار مطلق بناءً على مكان الملف الحالية
+BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+PERSIST_DIRECTORY = os.path.join(BASE_DIR, "chroma_db")  # أو اسم مجلد الـ DB لديك
 COLLECTION_NAME = "copperleaf_documents"
 DB_PATH = "rag/chroma_db"
 

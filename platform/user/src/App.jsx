@@ -1,6 +1,6 @@
-import React, { useState } from 'react';
-import { Bot, MessageSquare, Send, CheckCircle2, Clock, User, AlertTriangle, Loader2, AlertCircle, Trash2  } from 'lucide-react';
-import { sendMessageToAgent } from './services/chatService';
+import React, { useState, useEffect } from 'react';
+import { Bot, MessageSquare, Send, CheckCircle2, User, AlertTriangle, Loader2, AlertCircle, Trash2 } from 'lucide-react';
+import { sendMessageToAgent, fetchRunStatus } from './services/chatService';
 
 const AGENTS = [
   {
@@ -38,19 +38,34 @@ const AGENTS = [
 function App() {
   const [selectedAgent, setSelectedAgent] = useState(AGENTS[0]);
   const [inputMessage, setInputMessage] = useState('');
-  
-  // حالة الـ Graph الحالية للـ Agent (IDLE | IN_PROGRESS | WAITING_FOR_APPROVAL | FAILED)
   const [runStatus, setRunStatus] = useState('IDLE');
 
-  // جلب المحادثات المحفوظة من LocalStorage أو استخدام القيم الافتراضية
+  // 1. Thread IDs Persistence per Agent (Step 2)
+  const [threadIds, setThreadIds] = useState(() => {
+    const saved = localStorage.getItem('copperleaf_threads');
+    if (saved) {
+      try { return JSON.parse(saved); } catch (e) {}
+    }
+    return {
+      procurement: 'thread_procurement_1',
+      food_safety: 'thread_food_safety_1',
+      maintenance: 'thread_maintenance_1',
+      memory_rag: 'thread_memory_rag_1',
+      planning: 'thread_planning_1',
+    };
+  });
+
+  useEffect(() => {
+    localStorage.setItem('copperleaf_threads', JSON.stringify(threadIds));
+  }, [threadIds]);
+
+  // 2. Chat History Persistence
   const [conversations, setConversations] = useState(() => {
     const saved = localStorage.getItem('copperleaf_chats');
     if (saved) {
       try {
         return JSON.parse(saved);
-      } catch (e) {
-        // في حالة وجود خطأ في البيانات المخزنة
-      }
+      } catch (e) {}
     }
     return {
       procurement: [{ id: 1, sender: 'agent', text: 'Hello! How can I assist you with procurement today?' }],
@@ -59,67 +74,107 @@ function App() {
       memory_rag: [{ id: 1, sender: 'agent', text: 'RAG Agent ready. I can search past documents and recipes.' }],
       planning: [{ id: 1, sender: 'agent', text: 'Planning Agent here. Let’s decompose complex kitchen operations.' }],
     };
-});
+  });
 
-// حفظ أي تغيير في المحادثات تلقائياً في LocalStorage
-React.useEffect(() => {
-  localStorage.setItem('copperleaf_chats', JSON.stringify(conversations));
-}, [conversations]);
+  useEffect(() => {
+    localStorage.setItem('copperleaf_chats', JSON.stringify(conversations));
+  }, [conversations]);
+  // Polling Loop لمتابعة حالة الـ Run إذا كانت المعالجة معلقة أو قيد التشغيل
+  useEffect(() => {
+    let intervalId;
+
+    // نعمل Polling فقط لو السيرفر مستني موافقة (HITL) أو شغال
+    if (runStatus === 'WAITING_FOR_APPROVAL' || runStatus === 'IN_PROGRESS') {
+      intervalId = setInterval(async () => {
+        // فحص أحدث Run status من الـ Backend
+        const activeThreadId = threadIds[selectedAgent.id];
+        const statusData = await fetchRunStatus(activeThreadId);
+
+        if (statusData && statusData.status) {
+          // تحديث الحالة بناءً على رد السيرفر الحقيقي
+          if (statusData.status !== runStatus) {
+            setRunStatus(statusData.status);
+          }
+        }
+      }, 3000); // يفحص كل 3 ثواني
+    }
+
+    return () => {
+      if (intervalId) clearInterval(intervalId);
+    };
+  }, [runStatus, selectedAgent.id, threadIds]);
+
 
   const currentMessages = conversations[selectedAgent.id] || [];
 
+  // 3. Send Message Handler (Fixed Async & Thread Passing)
   const handleSendMessage = async (e) => {
-  e.preventDefault();
-  if (!inputMessage.trim() || runStatus === 'IN_PROGRESS') return;
+    e.preventDefault();
+    
+    // منع الإرسال تماماً إذا كان الـ Agent شغال أو منتظر موافقة الأدمن
+    if (!inputMessage.trim() || runStatus === 'IN_PROGRESS' || runStatus === 'WAITING_FOR_APPROVAL') {
+      return;
+    }
 
-  const userMsg = {
-    id: Date.now(),
-    sender: 'user',
-    text: inputMessage,
-  };
-
-  setConversations((prev) => ({
-    ...prev,
-    [selectedAgent.id]: [...(prev[selectedAgent.id] || []), userMsg],
-  }));
-
-  const currentText = inputMessage;
-  setInputMessage('');
-  setRunStatus('IN_PROGRESS');
-
-  try {
-    const response = await sendMessageToAgent(selectedAgent.id, currentText);
-    setRunStatus(response.status);
-
-    const agentMsg = {
-      id: Date.now() + 1,
-      sender: 'agent',
-      text: response.reply,
+    const userMsg = {
+      id: Date.now(),
+      sender: 'user',
+      text: inputMessage,
     };
 
+    const activeThreadId = threadIds[selectedAgent.id] || `thread_${selectedAgent.id}_1`;
+
     setConversations((prev) => ({
       ...prev,
-      [selectedAgent.id]: [...(prev[selectedAgent.id] || []), agentMsg],
+      [selectedAgent.id]: [...(prev[selectedAgent.id] || []), userMsg],
     }));
-  } catch (error) {
-    setRunStatus('FAILED');
-  }
-};
+
+    const currentText = inputMessage;
+    setInputMessage('');
+    setRunStatus('IN_PROGRESS');
+
+    try {
+      const response = await sendMessageToAgent(selectedAgent.id, currentText, activeThreadId);
+      setRunStatus(response.status);
+
+      const agentMsg = {
+        id: Date.now() + 1,
+        sender: 'agent',
+        text: response.reply,
+      };
+
+      setConversations((prev) => ({
+        ...prev,
+        [selectedAgent.id]: [...(prev[selectedAgent.id] || []), agentMsg],
+      }));
+    } catch (error) {
+      setRunStatus('FAILED');
+    }
+  };
+
+  // 4. Clear History & Start New Thread (Step 2)
   const handleClearHistory = () => {
-  if (window.confirm(`Are you sure you want to clear chat history for ${selectedAgent.name}?`)) {
-    setConversations((prev) => ({
-      ...prev,
-      [selectedAgent.id]: [
-        { id: Date.now(), sender: 'agent', text: `Chat cleared. How can I help you, ${selectedAgent.name}?` }
-      ],
-    }));
-  }
-};
+    if (window.confirm(`Are you sure you want to clear chat history for ${selectedAgent.name}?`)) {
+      const newThreadId = `thread_${selectedAgent.id}_${Date.now()}`;
+
+      setThreadIds((prev) => ({
+        ...prev,
+        [selectedAgent.id]: newThreadId,
+      }));
+
+      setConversations((prev) => ({
+        ...prev,
+        [selectedAgent.id]: [
+          { id: Date.now(), sender: 'agent', text: `Chat cleared. New session started for ${selectedAgent.name}.` },
+        ],
+      }));
+      setRunStatus('IDLE');
+    }
+  };
 
   return (
     <div className="flex h-screen bg-gray-100 font-sans">
-      
-      {/* 1. Sidebar - قائمة الوكلاء */}
+      {/* 1. Sidebar - Agents List */}
       <aside className="w-80 bg-white border-r border-gray-200 flex flex-col">
         <div className="p-4 border-b border-gray-200 flex items-center gap-2 bg-slate-900 text-white">
           <Bot className="w-6 h-6 text-blue-400" />
@@ -165,25 +220,23 @@ React.useEffect(() => {
         </div>
       </aside>
 
-      {/* 2. منطقة الشات الرئيسية */}
+      {/* 2. Main Chat Area */}
       <main className="flex-1 flex flex-col bg-gray-50">
-        
-        {/* Header الشات */}
+        {/* Header */}
         <header className="h-16 bg-white border-b border-gray-200 px-6 flex items-center justify-between shadow-sm">
           <button
-  onClick={handleClearHistory}
-  title="Clear Chat History"
-  className="flex items-center gap-1 bg-red-50 hover:bg-red-100 text-red-600 px-3 py-1 rounded-full border border-red-200 text-xs font-medium transition-colors cursor-pointer"
->
-  <Trash2 className="w-3.5 h-3.5" />
-  <span>Clear Chat</span>
-</button>
+            onClick={handleClearHistory}
+            title="Clear Chat History"
+            className="flex items-center gap-1 bg-red-50 hover:bg-red-100 text-red-600 px-3 py-1 rounded-full border border-red-200 text-xs font-medium transition-colors cursor-pointer"
+          >
+            <Trash2 className="w-3.5 h-3.5" />
+            <span>Clear Chat</span>
+          </button>
           <div>
             <h2 className="font-bold text-gray-800 text-base">{selectedAgent.name}</h2>
             <p className="text-xs text-gray-500">{selectedAgent.description}</p>
           </div>
-          
-          {/* محاكاة تغيير حالة الـ Run للتجربة */}
+
           <div className="flex items-center gap-2">
             <span className="text-xs text-gray-400">Demo State Test:</span>
             <button onClick={() => setRunStatus('IDLE')} className="px-2 py-1 text-xs bg-gray-100 rounded border">Idle</button>
@@ -192,7 +245,7 @@ React.useEffect(() => {
           </div>
         </header>
 
-        {/* 3. شريط حالة الـ State Graph (Status Banner) */}
+        {/* 3. Status Banner */}
         {runStatus === 'IN_PROGRESS' && (
           <div className="bg-blue-50 border-b border-blue-200 px-6 py-2.5 flex items-center gap-2 text-xs font-medium text-blue-700">
             <Loader2 className="w-4 h-4 animate-spin text-blue-600" />
@@ -220,7 +273,7 @@ React.useEffect(() => {
           </div>
         )}
 
-        {/* منطقة إظهار المحادثات */}
+        {/* 4. Messages Feed */}
         <div className="flex-1 overflow-y-auto p-6 space-y-4">
           {currentMessages.map((msg) => {
             const isUser = msg.sender === 'user';
@@ -247,34 +300,35 @@ React.useEffect(() => {
           })}
         </div>
 
-        {/* صندوق إدخال الرسائل */}
+        {/* 5. Input Form */}
+        {/* 5. Input Form */}
         <form onSubmit={handleSendMessage} className="p-4 bg-white border-t border-gray-200">
           <div className="flex gap-2 max-w-4xl mx-auto">
             <input
               type="text"
               value={inputMessage}
-              disabled={runStatus === 'IN_PROGRESS'}
+              disabled={runStatus === 'IN_PROGRESS' || runStatus === 'WAITING_FOR_APPROVAL'}
               onChange={(e) => setInputMessage(e.target.value)}
               placeholder={
                 runStatus === 'WAITING_FOR_APPROVAL'
-                  ? "Graph paused: Pending Admin Approval..."
+                  ? "🔒 Chat paused: Waiting for Admin approval..."
+                  : runStatus === 'IN_PROGRESS'
+                  ? "Processing message..."
                   : `Message ${selectedAgent.name}...`
               }
-              className="flex-1 border border-gray-300 rounded-xl px-4 py-2.5 text-sm focus:outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500 disabled:bg-gray-100 disabled:cursor-not-allowed"
+              className="flex-1 border border-gray-300 rounded-xl px-4 py-2.5 text-sm focus:outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500 disabled:bg-gray-100 disabled:text-gray-400 disabled:cursor-not-allowed"
             />
             <button
               type="submit"
-              disabled={runStatus === 'IN_PROGRESS'}
-              className="bg-blue-600 hover:bg-blue-700 text-white px-5 py-2.5 rounded-xl font-medium text-sm flex items-center justify-center gap-2 transition-colors disabled:bg-gray-400"
+              disabled={runStatus === 'IN_PROGRESS' || runStatus === 'WAITING_FOR_APPROVAL'}
+              className="bg-blue-600 hover:bg-blue-700 text-white px-5 py-2.5 rounded-xl font-medium text-sm flex items-center justify-center gap-2 transition-colors disabled:bg-gray-300 disabled:cursor-not-allowed"
             >
               <Send className="w-4 h-4" />
               Send
             </button>
           </div>
         </form>
-
       </main>
-
     </div>
   );
 }
