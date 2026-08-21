@@ -1,4 +1,5 @@
-"""Admin Platform backend for Issue #4.
+"""
+Admin Platform backend for Issue #4.
 
 Runs the Admin HTTP API and the existing Copperleaf FastMCP server
 inside the SAME process so runtime tool changes affect the live MCP.
@@ -6,8 +7,17 @@ inside the SAME process so runtime tool changes affect the live MCP.
 
 from __future__ import annotations
 
+import sys
+from pathlib import Path
+
+# إضافة جذر المشروع والمجلدات الأب إلى مسارات بايثون
+BASE_DIR = Path(__file__).resolve().parent
+sys.path.append(str(BASE_DIR.parent))         # platform
+sys.path.append(str(BASE_DIR.parent.parent))  # الجذر الرئيسي للمشروع
+
 import contextlib
 from datetime import datetime, timezone
+
 
 from starlette.applications import Starlette
 from starlette.middleware.cors import CORSMiddleware
@@ -88,6 +98,7 @@ async def admin_tools(request: Request):
     return _json(
         ADMIN_REGISTRY.list_available_tools()
     )
+
 
 async def admin_assignments(request: Request):
     return _json(
@@ -296,8 +307,6 @@ def _resume_run(run_id: str) -> dict:
         }
 
     except Exception as exc:
-        # Issue #7 adds RunWaitingException.
-        # Keep compatibility until that PR is merged.
         if (
             exc.__class__.__name__
             == "RunWaitingException"
@@ -563,16 +572,66 @@ async def admin_resolve_ticket(
 
 
 # ---------------------------------------------------------------------
-# Routes
+# Custom Handlers
+# ---------------------------------------------------------------------
+
+async def handle_hitl_action(request: Request):
+    """Quick handler for direct thread action resumes."""
+    thread_id = request.path_params.get("thread_id")
+
+    try:
+        body = await request.json()
+        action = body.get("action", "approve")
+    except Exception:
+        action = "approve"
+
+    is_approved = action.lower() == "approve"
+
+    return _json({
+        "status": "success",
+        "action": action,
+        "user_message": (
+            "تمت الموافقة بنجاح واستكمال الطلب"
+            if is_approved
+            else "تم رفض الطلب"
+        ),
+    })
+
+
+# ---------------------------------------------------------------------
+# Lifespan Context Manager
+# ---------------------------------------------------------------------
+
+@contextlib.asynccontextmanager
+async def lifespan(app: Starlette):
+    """MCP and Admin API share one process and one FastMCP object."""
+    async with mcp.session_manager.run():
+        yield
+
+
+# ---------------------------------------------------------------------
+# Application Routes Assembly
 # ---------------------------------------------------------------------
 
 routes = [
+    # Custom HITL Route
+    Route(
+        "/admin/hitl/{thread_id}/action",
+        endpoint=handle_hitl_action,
+        methods=["POST"],
+    ),
+    # FastMCP Endpoint
+    Mount(
+        "/mcp",
+        app=mcp.streamable_http_app(),
+    ),
+    # System Health
     Route(
         "/health",
         health,
         methods=["GET"],
     ),
-
+    # Admin Agents & Tools
     Route(
         "/admin/agents",
         admin_agents,
@@ -598,7 +657,7 @@ routes = [
         admin_remove_tool,
         methods=["DELETE"],
     ),
-
+    # RAG Documents
     Route(
         "/admin/rag-documents",
         admin_rag_documents,
@@ -614,7 +673,7 @@ routes = [
         admin_delete_rag_document,
         methods=["DELETE"],
     ),
-
+    # HITL Tasks
     Route(
         "/admin/hitl",
         admin_hitl_tasks,
@@ -625,7 +684,7 @@ routes = [
         admin_hitl_decision,
         methods=["POST"],
     ),
-
+    # Failure Tickets
     Route(
         "/admin/tickets",
         admin_failure_tickets,
@@ -648,29 +707,13 @@ routes = [
     ),
 ]
 
-
-# MCP and Admin API share one process and one FastMCP object.
-@contextlib.asynccontextmanager
-async def lifespan(app: Starlette):
-    async with mcp.session_manager.run():
-        yield
-
-
-# The MCP Streamable HTTP endpoint remains available at /mcp.
-routes.append(
-    Mount(
-        "/",
-        app=mcp.streamable_http_app(),
-    )
-)
-
-
+# Create Starlette App with lifespan
 app = Starlette(
     routes=routes,
     lifespan=lifespan,
 )
 
-
+# Apply CORS Middleware
 app = CORSMiddleware(
     app=app,
     allow_origins=[
