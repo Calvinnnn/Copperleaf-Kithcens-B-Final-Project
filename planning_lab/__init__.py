@@ -6,7 +6,9 @@ from .state_graph import (
     StateGraph,
     StateGraphRunner,
     HITLRequestException,
+    ExternalWaitException,
     RunPausedException,
+    RunWaitingException,
     RunFailedException,
 )
 
@@ -19,7 +21,8 @@ __all__ = [
     "StateGraph",
     "StateGraphRunner",
     "HITLRequestException",
+    "ExternalWaitException",
     "RunPausedException",
+    "RunWaitingException",
     "RunFailedException",
 ]
-
