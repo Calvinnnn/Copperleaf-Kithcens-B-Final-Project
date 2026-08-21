@@ -28,6 +28,18 @@ class HITLRequestException(Exception):
         self.context = context
         super().__init__(reason)
 
+class ExternalWaitException(Exception):
+    """Raised by a graph node when execution must wait for an external event."""
+
+    def __init__(self, reason: str, context: Dict[str, Any]) -> None:
+        self.reason = reason
+        self.context = context
+        super().__init__(reason)
+
+
+class RunWaitingException(Exception):
+    """Indicates that the graph is safely paused waiting for an external event."""
+    pass
 
 class RunPausedException(Exception):
     """Exception indicating the execution is paused for HITL approval."""
@@ -138,12 +150,20 @@ class StateGraphRunner:
 
             elif checkpoint.status == "completed":
                 return checkpoint.state_data
-
             else:
                 # Active/Normal checkpoint resume
                 current_state = checkpoint.state_name
                 state_data = checkpoint.state_data.copy()
+
+                # Allow new external data to be injected when resuming a waiting run.
+                # Example: parts_received confirmation from an external system.
+                if initial_data:
+                    state_data.update(initial_data)
+
                 completed_steps = checkpoint.completed_steps.copy()
+
+
+
         else:
             if not initial_state:
                 raise ValueError("No checkpoint found and no initial_state provided.")
@@ -206,6 +226,24 @@ class StateGraphRunner:
                     state_data=state_data,
                     completed_steps=completed_steps,
                     status=status,
+                )
+
+            except ExternalWaitException as wait_exc:
+                # External waiting is different from HITL.
+                # Persist the exact graph state without creating an admin task.
+                create_checkpoint(
+                    run_id=self.run_id,
+                    graph_id=self.graph.graph_id,
+                    state_name=current_state,
+                    state_data=state_data,
+                    completed_steps=completed_steps,
+                    pending_action=wait_exc.reason,
+                    status="active",
+                )
+
+                raise RunWaitingException(
+                    f"Run {self.run_id} is waiting in state "
+                    f"{current_state!r}: {wait_exc.reason}"
                 )
 
             except HITLRequestException as hitl_exc:
