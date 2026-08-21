@@ -41,18 +41,22 @@ from mcp.types import (
 )
 from pydantic import BaseModel, Field
 
+
 try:
     from mcp_server.auth import AuthError, Session, resolve_staff
     from mcp_server.db import get_connection
     from mcp_server.validation import ValidationError, requires_elicitation, validate_date_range
+    from mcp_server.admin_registry import RuntimeToolRegistry
     import mcp_server.tools as _tools
     from mcp_server.tools import AuthorizationError, ToolError
 except ImportError:
     from auth import AuthError, Session, resolve_staff
     from db import get_connection
     from validation import ValidationError, requires_elicitation, validate_date_range
+    from admin_registry import RuntimeToolRegistry
     import tools as _tools
     from tools import AuthorizationError, ToolError
+
 
 mcp = FastMCP(
     "copperleaf-kitchens",
@@ -504,6 +508,125 @@ def resolve_failure(ticket_id: str, resolution: str) -> dict:
     except (_tools.AuthorizationError, _tools.ToolError) as e:
         return _as_error(e)
 
+# ---------------------------------------------------------------------
+# Admin Platform — Live Agent / MCP Tool Management
+# ---------------------------------------------------------------------
+
+_MANAGEABLE_TOOL_LIBRARY = {
+    "get_inventory": get_inventory,
+    "get_low_stock_items": get_low_stock_items,
+    "get_supplier_orders": get_supplier_orders,
+    "get_transaction_history": get_transaction_history,
+    "write_off_inventory": write_off_inventory,
+    "generate_waste_report": generate_waste_report,
+    "get_run_status": get_run_status,
+    "list_run_checkpoints": list_run_checkpoints,
+    "list_hitl_tasks": list_hitl_tasks,
+    "approve_hitl_task": approve_hitl_task,
+    "reject_hitl_task": reject_hitl_task,
+    "list_failure_tickets": list_failure_tickets,
+    "resolve_failure": resolve_failure,
+}
+
+
+ADMIN_REGISTRY = RuntimeToolRegistry(
+    mcp=mcp,
+    tool_library=_MANAGEABLE_TOOL_LIBRARY,
+)
+
+
+def _require_admin() -> None:
+    """Require a manager session for Admin Platform mutations."""
+
+    if SESSION.role != "manager":
+        raise AuthorizationError(
+            "Admin Platform action requires manager role."
+        )
+
+
+@mcp.tool()
+def admin_list_agents() -> list[dict] | dict:
+    """List agents and their currently assigned MCP tools."""
+
+    try:
+        _require_admin()
+        return ADMIN_REGISTRY.list_agents()
+    except (AuthorizationError, ValueError, RuntimeError) as e:
+        return _as_error(e)
+
+
+@mcp.tool()
+def admin_list_tools() -> list[dict] | dict:
+    """List MCP tools that the admin may assign to agents."""
+
+    try:
+        _require_admin()
+        return ADMIN_REGISTRY.list_available_tools()
+    except (AuthorizationError, ValueError, RuntimeError) as e:
+        return _as_error(e)
+
+
+@mcp.tool()
+def admin_list_assignments() -> list[dict] | dict:
+    """List persisted agent-to-tool assignments."""
+
+    try:
+        _require_admin()
+        return ADMIN_REGISTRY.list_assignments()
+    except (AuthorizationError, ValueError, RuntimeError) as e:
+        return _as_error(e)
+
+
+@mcp.tool()
+async def admin_assign_tool(
+    ctx: Context,
+    agent_id: str,
+    tool_name: str,
+) -> dict:
+    """Assign a tool to an agent and register it on the live MCP server."""
+
+    try:
+        _require_admin()
+
+        result = ADMIN_REGISTRY.assign_tool(
+            agent_id=agent_id,
+            tool_name=tool_name,
+        )
+
+        await ctx.session.send_tool_list_changed()
+
+        result["notification_sent"] = "tools/list_changed"
+
+        return result
+
+    except (AuthorizationError, ValueError, RuntimeError) as e:
+        return _as_error(e)
+
+
+@mcp.tool()
+async def admin_remove_tool(
+    ctx: Context,
+    agent_id: str,
+    tool_name: str,
+) -> dict:
+    """Remove an agent tool assignment from the live MCP server."""
+
+    try:
+        _require_admin()
+
+        result = ADMIN_REGISTRY.remove_tool(
+            agent_id=agent_id,
+            tool_name=tool_name,
+        )
+
+        await ctx.session.send_tool_list_changed()
+
+        result["notification_sent"] = "tools/list_changed"
+
+        return result
+
+    except (AuthorizationError, ValueError, RuntimeError) as e:
+        return _as_error(e)
 
 # ---------------------------------------------------------------------
 # Protocol Concern: DEFENSIVE TOOL DESIGN (Schema hardening)
@@ -532,6 +655,11 @@ _ALL_TOOL_NAMES = (
     "reject_hitl_task",
     "list_failure_tickets",
     "resolve_failure",
+    "admin_list_agents",
+    "admin_list_tools",
+    "admin_list_assignments",
+    "admin_assign_tool",
+    "admin_remove_tool",
 )
 
 

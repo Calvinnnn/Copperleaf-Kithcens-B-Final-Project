@@ -63,3 +63,9 @@ uvicorn==0.52.3
 websockets==17.0.1
 xxhash==4.0.1
 zstandard==0.25.0
+
+# Admin Platform RAG dependencies
+chromadb==1.5.9
+langchain-text-splitters==1.1.2
+pypdf==6.16.1
+sentence-transformers==6.0.0
