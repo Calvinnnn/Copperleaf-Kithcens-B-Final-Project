@@ -24,9 +24,8 @@ def load_pdf(pdf_path: Path):
 
     return pages
 
-
-def create_chunks():
-    """Load all PDFs and split them into overlapping chunks."""
+def create_chunks_for_pdf(pdf_path: Path):
+    """Split one PDF into the same chunk format used by the RAG pipeline."""
 
     splitter = RecursiveCharacterTextSplitter(
         chunk_size=800,
@@ -36,9 +35,35 @@ def create_chunks():
             "\n",
             ". ",
             " ",
-            ""
-        ]
+            "",
+        ],
     )
+
+    all_chunks = []
+
+    pages = load_pdf(pdf_path)
+
+    for page_data in pages:
+        chunks = splitter.split_text(
+            page_data["text"]
+        )
+
+        for chunk_index, chunk in enumerate(chunks):
+            all_chunks.append(
+                {
+                    "text": chunk,
+                    "metadata": {
+                        "source": pdf_path.name,
+                        "page": page_data["page"],
+                        "chunk_id": chunk_index,
+                    },
+                }
+            )
+
+    return all_chunks
+
+def create_chunks():
+    """Load all PDFs and split them into overlapping chunks."""
 
     all_chunks = []
 
@@ -50,26 +75,11 @@ def create_chunks():
         )
 
     for pdf_path in pdf_files:
-
-        pages = load_pdf(pdf_path)
-
-        for page_data in pages:
-
-            chunks = splitter.split_text(page_data["text"])
-
-            for chunk_index, chunk in enumerate(chunks):
-
-                all_chunks.append({
-                    "text": chunk,
-                    "metadata": {
-                        "source": pdf_path.name,
-                        "page": page_data["page"],
-                        "chunk_id": chunk_index
-                    }
-                })
+        all_chunks.extend(
+            create_chunks_for_pdf(pdf_path)
+        )
 
     return all_chunks
-
 
 if __name__ == "__main__":
 

@@ -18,6 +18,7 @@ SCHEMA_PATH = DB_DIR / "schema.sql"
 SEED_PATH = DB_DIR / "seed.sql"
 MEMORY_MIGRATE_PATH = DB_DIR / "migrate_memory.sql"
 CHECKPOINT_MIGRATE_PATH = DB_DIR / "migrate_checkpoint.sql"
+ADMIN_MIGRATE_PATH = DB_DIR / "migrate_admin.sql"
 
 
 def build():
@@ -36,8 +37,11 @@ def build():
         if CHECKPOINT_MIGRATE_PATH.exists():
             conn.executescript(CHECKPOINT_MIGRATE_PATH.read_text())
             print(f"Applied checkpoint migration from {CHECKPOINT_MIGRATE_PATH.name}")
+        if ADMIN_MIGRATE_PATH.exists():
+            conn.executescript(ADMIN_MIGRATE_PATH.read_text())
+            print(f"Applied admin migration from {ADMIN_MIGRATE_PATH.name}")
         conn.commit()
-        print(f"Built {DB_PATH} from schema.sql + seed.sql + migrate_memory.sql + migrate_checkpoint.sql")
+        print(f"Built {DB_PATH} from schema.sql + seed.sql + migrate_memory.sql + migrate_checkpoint.sql + migrate_admin.sql")
     finally:
         conn.close()
 
