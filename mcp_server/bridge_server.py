@@ -84,62 +84,41 @@ async def chat_endpoint(req: ChatRequest):
         
         history = chat_histories[req.thread_id]
 
-        # ==========================================
-        # المسار 1: Maintenance Agent (Person 3 HITL)
-        # ==========================================
+        # 1. التحقق أولاً إذا كان الوكيل يتطلب جراف صيانة أو مشتريات حرجة تستدعي HITL
         if req.agent_id in ["maintenance", "maintenance_agent"]:
             maintenance_runner = StateGraphRunner(maintenance_graph, run_id=run_id)
-            
-            # بناء الـ State الخاصة بـ maintenance_graph.py
             initial_data = {
                 "issue_description": req.message,
                 "equipment": "Gas Oven",
                 "branch_id": 1,
-                "estimated_parts_cost": 1500.0,  # تفترض التكلفة > 500$ لتفعيل الـ HITL
+                "estimated_parts_cost": 1500.0, 
                 "safety_critical": True,
                 "thread_id": req.thread_id
             }
 
             try:
-                # تشغيل الجراف بدءاً من عقدة الاستلام
                 final_state = maintenance_runner.run(
                     initial_state="maintenance_request",
                     initial_data=initial_data
                 )
-                
-                reply_text = (
-                    f"Maintenance Processed Successfully:\n"
-                    f"- Status: {final_state.get('status', 'COMPLETED')}\n"
-                    f"- Action: {final_state.get('repair_action', 'N/A')}"
-                )
-                history.append(HumanMessage(content=req.message))
-                history.append(AIMessage(content=reply_text))
-
-                return {
-                    "status": "IDLE",
-                    "reply": reply_text,
-                    "run_id": run_id,
-                    "thread_id": req.thread_id
-                }
-
+                reply_text = f"Maintenance Processed: {final_state.get('repair_action', 'Completed')}"
             except (HITLRequestException, RunPausedException) as hitl_err:
-                # عند تجاوز 500$ أو خطورة السلامة يرمي الجراف الاستثناء ويتوقف هنا!
                 task_id = f"task_{req.thread_id}"
-                pending_hitl_tasks[task_id] = {
-                    "task_id": task_id,
-                    "thread_id": req.thread_id,
-                    "agent_id": "maintenance",
-                    "reason": getattr(hitl_err, "reason", "MAINTENANCE_ADMIN_APPROVAL_REQUIRED"),
-                    "context": getattr(hitl_err, "context", {}),
-                    "initial_data": initial_data,
-                    "status": "PENDING"
-                }
+                # التأكد من عدم تكرار إنشاء التاسك إذا كانت موجودة بالفعل
+                if task_id not in pending_hitl_tasks or pending_hitl_tasks[task_id]["status"] != "PENDING":
+                    pending_hitl_tasks[task_id] = {
+                        "task_id": task_id,
+                        "thread_id": req.thread_id,
+                        "agent_id": req.agent_id,
+                        "reason": "MAINTENANCE_ADMIN_APPROVAL_REQUIRED",
+                        "context": {"message": req.message},
+                        "initial_data": initial_data,
+                        "status": "PENDING"
+                    }
 
-                reply_text = "⚠️ [HITL INTERRUPT] Maintenance request requires Admin Approval ($1500 estimate / Safety Critical)."
+                reply_text = "⚠️ [HITL Interrupt] Request paused. Sent to Admin for approval."
                 history.append(HumanMessage(content=req.message))
                 history.append(AIMessage(content=reply_text))
-
-                # إرجاع حالة WAITING_FOR_APPROVAL لتجميد اليوزر
                 return {
                     "status": "WAITING_FOR_APPROVAL",
                     "reply": reply_text,
@@ -148,145 +127,38 @@ async def chat_endpoint(req: ChatRequest):
                     "task_id": task_id
                 }
 
-        # ==========================================
-        # المسار 2: Procurement Agent
-        # ==========================================
-        elif req.agent_id == "procurement":
-            initial_data = {
-                "raw_request": req.message,
-                "thread_id": req.thread_id,
-                "branch_id": 1,
-                "decomposed_items": [],
-                "rejected_suppliers": []
-            }
-            procurement_runner = StateGraphRunner(procurement_graph, run_id=run_id)
-            try:
-                final_state = procurement_runner.run(
-                    initial_state="receive_request",
-                    initial_data=initial_data
-                )
-                po_num = final_state.get("po_number", "N/A")
-                supplier = final_state.get("selected_supplier", "N/A")
-                total = final_state.get("estimated_total", 0.0)
-                
-                reply_text = (
-                    f"Procurement Order Processed Successfully:\n"
-                    f"- PO Number: {po_num}\n"
-                    f"- Supplier: {supplier}\n"
-                    f"- Total Estimated: ${total:.2f}\n"
-                    f"- Status: {final_state.get('status', 'COMPLETED')}"
-                )
-                history.append(HumanMessage(content=req.message))
-                history.append(AIMessage(content=reply_text))
+        # 2. المسار العام المعتمد على الـ LLM + RAG + الذاكرة القصيرة لجميع الوكلاء الآخرين
+        rag_result = rag_orchestrator.run(query=req.message)
+        context_text = getattr(rag_result, "answer_context", "") or ""
 
-                return {
-                    "status": "IDLE",
-                    "reply": reply_text,
-                    "run_id": run_id,
-                    "thread_id": req.thread_id
-                }
-            except (HITLRequestException, RunPausedException) as hitl_err:
-                reply_text = "Approval required for procurement order."
-                history.append(HumanMessage(content=req.message))
-                history.append(AIMessage(content=reply_text))
-                return {
-                    "status": "WAITING_FOR_APPROVAL",
-                    "reply": reply_text,
-                    "run_id": run_id,
-                    "thread_id": req.thread_id
-                }
+        system_prompt = (
+            f"You are the {req.agent_id} agent for Copperleaf Kitchens.\n"
+            "- Pay strict attention to the conversation history below to answer personal questions (like user name, branch, etc.).\n"
+            "- Use the Knowledge Base Context if the query is about procedures, policies, or specs.\n\n"
+            f"Knowledge Base Context:\n{context_text}"
+        )
 
-        # ==========================================
-        # المسار 3: Food Safety Agent
-        # ==========================================
-        elif req.agent_id == "food_safety":
-            if food_safety_graph:
-                food_safety_runner = StateGraphRunner(food_safety_graph, run_id=run_id)
-                initial_data = {
-                    "raw_request": req.message, 
-                    "thread_id": req.thread_id,
-                    "branch_id": 1
-                }
-                try:
-                    final_state = food_safety_runner.run(
-                        initial_state="receive_inspection_request",
-                        initial_data=initial_data
-                    )
-                    status = final_state.get('status', 'COMPLETED')
-                    compliance = final_state.get('compliance_result', 'PASSED')
-                    violations = len(final_state.get('violations_found', []))
-                    
-                    reply_text = (
-                        f"Food Safety Inspection Completed:\n"
-                        f"- Compliance Result: {compliance}\n"
-                        f"- Violations Found: {violations}\n"
-                        f"- Status: {status}"
-                    )
-                    history.append(HumanMessage(content=req.message))
-                    history.append(AIMessage(content=reply_text))
+        messages = [SystemMessage(content=system_prompt)] + list(history) + [HumanMessage(content=req.message)]
+        response = llm.invoke(messages)
+        reply_text = response.content
 
-                    return {
-                        "status": "IDLE",
-                        "reply": reply_text,
-                        "run_id": run_id,
-                        "thread_id": req.thread_id
-                    }
-                except (HITLRequestException, RunPausedException) as hitl_err:
-                    reply_text = f"High-risk food safety violation detected! Manager review required: {hitl_err.reason}"
-                    history.append(HumanMessage(content=req.message))
-                    history.append(AIMessage(content=reply_text))
-                    return {
-                        "status": "WAITING_FOR_APPROVAL",
-                        "reply": reply_text,
-                        "run_id": run_id,
-                        "thread_id": req.thread_id
-                    }
-            else:
-                reply_text = "Food safety module initialized."
-                history.append(HumanMessage(content=req.message))
-                history.append(AIMessage(content=reply_text))
-                return {
-                    "status": "IDLE",
-                    "reply": reply_text,
-                    "run_id": run_id,
-                    "thread_id": req.thread_id
-                }
+        # تحديث الذاكرة القصيرة
+        history.append(HumanMessage(content=req.message))
+        history.append(AIMessage(content=reply_text))
 
-        # ==========================================
-        # المسار 4: General / RAG Agent
-        # ==========================================
-        else:
-            rag_result = rag_orchestrator.run(query=req.message)
-            context_text = getattr(rag_result, "answer_context", "") or ""
+        if len(history) > 12:
+            chat_histories[req.thread_id] = history[-12:]
 
-            system_prompt = (
-                "You are an intelligent assistant.\n"
-                "- Pay strict attention to the conversation history below to answer any personal questions.\n"
-                "- If the query is about procedures, SOPs, or internal rules, use the Knowledge Base Context provided.\n\n"
-                f"Knowledge Base Context:\n{context_text}"
-            )
-
-            messages = [SystemMessage(content=system_prompt)] + list(history) + [HumanMessage(content=req.message)]
-            response = llm.invoke(messages)
-            reply_text = response.content
-
-            history.append(HumanMessage(content=req.message))
-            history.append(AIMessage(content=reply_text))
-
-            if len(history) > 10:
-                chat_histories[req.thread_id] = history[-10:]
-
-            return {
-                "status": "IDLE",
-                "reply": reply_text,
-                "run_id": run_id,
-                "thread_id": req.thread_id
-            }
+        return {
+            "status": "IDLE",
+            "reply": reply_text,
+            "run_id": run_id,
+            "thread_id": req.thread_id
+        }
 
     except Exception as e:
         print(f"Error in chat endpoint: {e}")
         raise HTTPException(status_code=500, detail=str(e))
-
 # ==========================================
 # Endpoints خاصة بـ Admin Platform (HITL Management)
 # ==========================================

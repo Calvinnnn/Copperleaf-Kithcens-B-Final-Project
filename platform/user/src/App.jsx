@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { Bot, MessageSquare, Send, CheckCircle2, User, AlertTriangle, Loader2, AlertCircle, Trash2 } from 'lucide-react';
 import { sendMessageToAgent, fetchRunStatus } from './services/chatService';
 
@@ -38,9 +38,22 @@ const AGENTS = [
 function App() {
   const [selectedAgent, setSelectedAgent] = useState(AGENTS[0]);
   const [inputMessage, setInputMessage] = useState('');
-  const [runStatus, setRunStatus] = useState('IDLE');
 
-  // 1. Thread IDs Persistence per Agent (Step 2)
+  // Run status is tracked PER AGENT, not as one global value — otherwise
+  // switching agents and coming back would forget that a run is still
+  // genuinely paused waiting on the admin.
+  const [runStatuses, setRunStatuses] = useState(() => {
+    const initial = {};
+    AGENTS.forEach((a) => { initial[a.id] = 'IDLE'; });
+    return initial;
+  });
+  const runStatus = runStatuses[selectedAgent.id] || 'IDLE';
+
+  const setRunStatusFor = (agentId, status) => {
+    setRunStatuses((prev) => ({ ...prev, [agentId]: status }));
+  };
+
+  // 1. Thread IDs Persistence per Agent
   const [threadIds, setThreadIds] = useState(() => {
     const saved = localStorage.getItem('copperleaf_threads');
     if (saved) {
@@ -79,96 +92,130 @@ function App() {
   useEffect(() => {
     localStorage.setItem('copperleaf_chats', JSON.stringify(conversations));
   }, [conversations]);
-  // Polling Loop لمتابعة حالة الـ Run إذا كانت المعالجة معلقة أو قيد التشغيل
+
+  const appendAgentMessage = useCallback((agentId, text) => {
+    setConversations((prev) => ({
+      ...prev,
+      [agentId]: [
+        ...(prev[agentId] || []),
+        { id: Date.now() + Math.random(), sender: 'agent', text },
+      ],
+    }));
+  }, []);
+
+  // Avoid appending the same resolution message twice if a poll fires
+  // again before the effect re-checks runStatus.
+  const lastHandledResolution = useRef({});
+
+  // Whenever the selected agent (or its thread) changes, re-sync its real
+  // status from the backend — this is what makes a still-paused run stay
+  // locked even after switching agents and coming back.
   useEffect(() => {
-    let intervalId;
+    let cancelled = false;
+    const agentId = selectedAgent.id;
+    const activeThreadId = threadIds[agentId];
 
-    // نعمل Polling فقط لو السيرفر مستني موافقة (HITL) أو شغال
-    if (runStatus === 'WAITING_FOR_APPROVAL' || runStatus === 'IN_PROGRESS') {
-      intervalId = setInterval(async () => {
-        // فحص أحدث Run status من الـ Backend
-        const activeThreadId = threadIds[selectedAgent.id];
-        const statusData = await fetchRunStatus(activeThreadId);
+    (async () => {
+      const statusData = await fetchRunStatus(agentId, activeThreadId);
+      if (cancelled || !statusData || !statusData.status) return;
+      setRunStatusFor(agentId, statusData.status);
+    })();
 
-        if (statusData && statusData.status) {
-          // تحديث الحالة بناءً على رد السيرفر الحقيقي
-          if (statusData.status !== runStatus) {
-            setRunStatus(statusData.status);
-          }
-        }
-      }, 3000); // يفحص كل 3 ثواني
+    return () => { cancelled = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedAgent.id]);
+
+  // Polling loop for the currently selected agent while its run is
+  // paused/in-progress. When it resolves, push the admin's decision (or
+  // failure) into the chat and unlock the input.
+  useEffect(() => {
+    if (runStatus !== 'WAITING_FOR_APPROVAL' && runStatus !== 'IN_PROGRESS') {
+      return undefined;
     }
 
-    return () => {
-      if (intervalId) clearInterval(intervalId);
-    };
-  }, [runStatus, selectedAgent.id, threadIds]);
+    const agentId = selectedAgent.id;
+    const activeThreadId = threadIds[agentId];
 
+    const intervalId = setInterval(async () => {
+      const statusData = await fetchRunStatus(agentId, activeThreadId);
+      if (!statusData || !statusData.status) return;
+
+      if (statusData.status !== runStatuses[agentId]) {
+        setRunStatusFor(agentId, statusData.status);
+
+        // The run left WAITING_FOR_APPROVAL/IN_PROGRESS — tell the user
+        // what happened, once.
+        if (statusData.status !== 'WAITING_FOR_APPROVAL' && statusData.status !== 'IN_PROGRESS') {
+          const resolutionKey = `${agentId}:${activeThreadId}:${statusData.status}`;
+          if (lastHandledResolution.current[resolutionKey] !== true && statusData.reply) {
+            lastHandledResolution.current[resolutionKey] = true;
+            appendAgentMessage(agentId, statusData.reply);
+          }
+        }
+      }
+    }, 3000);
+
+    return () => clearInterval(intervalId);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [runStatus, selectedAgent.id, threadIds]);
 
   const currentMessages = conversations[selectedAgent.id] || [];
 
-  // 3. Send Message Handler (Fixed Async & Thread Passing)
+  // 3. Send Message Handler
   const handleSendMessage = async (e) => {
     e.preventDefault();
-    
+
     // منع الإرسال تماماً إذا كان الـ Agent شغال أو منتظر موافقة الأدمن
     if (!inputMessage.trim() || runStatus === 'IN_PROGRESS' || runStatus === 'WAITING_FOR_APPROVAL') {
       return;
     }
 
+    const agentId = selectedAgent.id;
     const userMsg = {
       id: Date.now(),
       sender: 'user',
       text: inputMessage,
     };
 
-    const activeThreadId = threadIds[selectedAgent.id] || `thread_${selectedAgent.id}_1`;
+    const activeThreadId = threadIds[agentId] || `thread_${agentId}_1`;
 
     setConversations((prev) => ({
       ...prev,
-      [selectedAgent.id]: [...(prev[selectedAgent.id] || []), userMsg],
+      [agentId]: [...(prev[agentId] || []), userMsg],
     }));
 
     const currentText = inputMessage;
     setInputMessage('');
-    setRunStatus('IN_PROGRESS');
+    setRunStatusFor(agentId, 'IN_PROGRESS');
 
     try {
-      const response = await sendMessageToAgent(selectedAgent.id, currentText, activeThreadId);
-      setRunStatus(response.status);
-
-      const agentMsg = {
-        id: Date.now() + 1,
-        sender: 'agent',
-        text: response.reply,
-      };
-
-      setConversations((prev) => ({
-        ...prev,
-        [selectedAgent.id]: [...(prev[selectedAgent.id] || []), agentMsg],
-      }));
+      const response = await sendMessageToAgent(agentId, currentText, activeThreadId);
+      setRunStatusFor(agentId, response.status);
+      appendAgentMessage(agentId, response.reply);
     } catch (error) {
-      setRunStatus('FAILED');
+      setRunStatusFor(agentId, 'FAILED');
+      appendAgentMessage(agentId, `⚠️ Couldn't reach the backend: ${error.message}`);
     }
   };
 
-  // 4. Clear History & Start New Thread (Step 2)
+  // 4. Clear History & Start New Thread
   const handleClearHistory = () => {
     if (window.confirm(`Are you sure you want to clear chat history for ${selectedAgent.name}?`)) {
-      const newThreadId = `thread_${selectedAgent.id}_${Date.now()}`;
+      const agentId = selectedAgent.id;
+      const newThreadId = `thread_${agentId}_${Date.now()}`;
 
       setThreadIds((prev) => ({
         ...prev,
-        [selectedAgent.id]: newThreadId,
+        [agentId]: newThreadId,
       }));
 
       setConversations((prev) => ({
         ...prev,
-        [selectedAgent.id]: [
+        [agentId]: [
           { id: Date.now(), sender: 'agent', text: `Chat cleared. New session started for ${selectedAgent.name}.` },
         ],
       }));
-      setRunStatus('IDLE');
+      setRunStatusFor(agentId, 'IDLE');
     }
   };
 
@@ -188,13 +235,11 @@ function App() {
 
           {AGENTS.map((agent) => {
             const isSelected = selectedAgent.id === agent.id;
+            const agentStatus = runStatuses[agent.id] || 'IDLE';
             return (
               <div
                 key={agent.id}
-                onClick={() => {
-                  setSelectedAgent(agent);
-                  setRunStatus('IDLE');
-                }}
+                onClick={() => setSelectedAgent(agent)}
                 className={`p-3 rounded-xl cursor-pointer transition-all border ${
                   isSelected
                     ? 'bg-blue-50 border-blue-500 shadow-sm'
@@ -208,10 +253,22 @@ function App() {
                       {agent.name}
                     </p>
                   </div>
-                  <span className="flex items-center gap-1 text-[10px] font-medium text-emerald-600 bg-emerald-50 px-2 py-0.5 rounded-full border border-emerald-200">
-                    <CheckCircle2 className="w-3 h-3" />
-                    {agent.status}
-                  </span>
+                  {agentStatus === 'WAITING_FOR_APPROVAL' ? (
+                    <span className="flex items-center gap-1 text-[10px] font-medium text-amber-700 bg-amber-50 px-2 py-0.5 rounded-full border border-amber-200">
+                      <AlertTriangle className="w-3 h-3" />
+                      Waiting
+                    </span>
+                  ) : agentStatus === 'FAILED' ? (
+                    <span className="flex items-center gap-1 text-[10px] font-medium text-red-700 bg-red-50 px-2 py-0.5 rounded-full border border-red-200">
+                      <AlertCircle className="w-3 h-3" />
+                      Failed
+                    </span>
+                  ) : (
+                    <span className="flex items-center gap-1 text-[10px] font-medium text-emerald-600 bg-emerald-50 px-2 py-0.5 rounded-full border border-emerald-200">
+                      <CheckCircle2 className="w-3 h-3" />
+                      {agent.status}
+                    </span>
+                  )}
                 </div>
                 <p className="text-xs text-gray-500 line-clamp-1">{agent.description}</p>
               </div>
@@ -237,12 +294,7 @@ function App() {
             <p className="text-xs text-gray-500">{selectedAgent.description}</p>
           </div>
 
-          <div className="flex items-center gap-2">
-            <span className="text-xs text-gray-400">Demo State Test:</span>
-            <button onClick={() => setRunStatus('IDLE')} className="px-2 py-1 text-xs bg-gray-100 rounded border">Idle</button>
-            <button onClick={() => setRunStatus('WAITING_FOR_APPROVAL')} className="px-2 py-1 text-xs bg-amber-100 text-amber-800 rounded border border-amber-300">HITL</button>
-            <button onClick={() => setRunStatus('FAILED')} className="px-2 py-1 text-xs bg-red-100 text-red-800 rounded border border-red-300">Failed</button>
-          </div>
+          <div className="w-24" />
         </header>
 
         {/* 3. Status Banner */}
@@ -300,7 +352,6 @@ function App() {
           })}
         </div>
 
-        {/* 5. Input Form */}
         {/* 5. Input Form */}
         <form onSubmit={handleSendMessage} className="p-4 bg-white border-t border-gray-200">
           <div className="flex gap-2 max-w-4xl mx-auto">
