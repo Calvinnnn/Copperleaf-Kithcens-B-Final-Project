@@ -3,7 +3,7 @@
  * Connects React UI to the real Copperleaf backend (port 8000).
  */
 
-const API_BASE_URL = 'http://localhost:8000';
+const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000';
 
 /**
  * إرسال رسالة إلى الـ Agent (LLM + RAG + Memory، أو الـ State Graph الحقيقي
