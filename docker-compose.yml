@@ -1,0 +1,59 @@
+services:
+  backend:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: copperleaf-backend
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./db:/app/db
+      - ./rag:/app/rag
+      - hf-cache:/app/cache/huggingface
+    env_file:
+      - .env
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    networks:
+      - copperleaf-network
+    restart: unless-stopped
+
+  user-frontend:
+    build:
+      context: platform/user
+      dockerfile: Dockerfile
+    container_name: copperleaf-user-frontend
+    ports:
+      - "5173:5173"
+    depends_on:
+      backend:
+        condition: service_healthy
+    networks:
+      - copperleaf-network
+    restart: unless-stopped
+
+  admin-frontend:
+    build:
+      context: platform/admin
+      dockerfile: Dockerfile
+    container_name: copperleaf-admin-frontend
+    ports:
+      - "5174:5174"
+    depends_on:
+      backend:
+        condition: service_healthy
+    networks:
+      - copperleaf-network
+    restart: unless-stopped
+
+networks:
+  copperleaf-network:
+    driver: bridge
+
+volumes:
+  hf-cache:
+    name: copperleaf-hf-cache

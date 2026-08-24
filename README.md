@@ -61,7 +61,6 @@ graph TD
     Reflex --> Final
 ```
 
-<<<<<<< HEAD
 ## Agent & System Integration
 
 This project integrates two advanced intelligent agent loops:
@@ -70,14 +69,9 @@ This project integrates two advanced intelligent agent loops:
 
 Both agents are integrated into a single unified facade class (`UnifiedAgent` in `agent/agent.py`) which acts alongside each other. Real operational tasks are transparently routed to the Planning Agent, which executes directly against the MCP Server (`mcp_server.tools` and `copperleaf.db`), enforcing strict database constraints (auth, bounds, sign-offs).
 
-## Run Instructions
-
-Run these commands from this directory using the virtual environment:
-=======
 ---
 
 ## 3. Core Algorithms
->>>>>>> 84e8cb26532118ee6c53915b3ba05dcff58559b3
 
 1. **Decomposition-First (`algorithms/decomposition.py`)**: Generates an executable task Directed Acyclic Graph (DAG) before execution. Pydantic validates schemas, while NetworkX checks acyclicity and schedules parallel-safe topological batches.
 2. **Dynamic Decomposition (`algorithms/dynamic_decomposition.py`)**: Interleaves sub-task planning and real-time execution. Each step evaluates prior observations to dynamically adapt the next action.
@@ -149,22 +143,20 @@ The complete benchmark evaluation was executed using `planning_eval/evaluate.py`
 ### Environment Setup
 Install required dependencies:
 ```powershell
-<<<<<<< HEAD
+python -m pip install -r requirements.txt
+
 # Run the Planning Algorithms Benchmark Evaluation Setup (Generates comparison summary)
-.\venv\Scripts\python.exe -m planning_eval.evaluate
+python -m planning_eval.evaluate
 
 # Run the Unified Agent E2E Smoke Test (Showcases routing between general RAG and Operational Planner)
-.\venv\Scripts\python.exe -m agent.agent
+python -m agent.agent
 
 # You can still run focused single-algorithm simulations on the CLI:
 # Full decomposition-first DAG, execution, grounded critique, and refinement
-.\venv\Scripts\python.exe -m planning_lab.cli "Design a 60-minute phishing-awareness workshop for new employees"
+python -m planning_lab.cli "Design a 60-minute phishing-awareness workshop for new employees"
 
 # Dynamic/interleaved decomposition
-.\venv\Scripts\python.exe -m planning_lab.cli "Investigate why customer onboarding completion fell" --mode dynamic
-=======
-python -m pip install -r requirements.txt
->>>>>>> 84e8cb26532118ee6c53915b3ba05dcff58559b3
+python -m planning_lab.cli "Investigate why customer onboarding completion fell" --mode dynamic
 ```
 
 *(Optional: If running against live Mistral API, copy `.env.example` to `.env` and set `MISTRAL_API_KEY=your_key_here`)*
