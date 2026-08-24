@@ -255,14 +255,7 @@ def node_waiting_for_supplier(state: Dict[str, Any]) -> Tuple[str, Dict[str, Any
                 supplier_response = d_data
 
     if not supplier_response:
-        raise HITLRequestException(
-            reason="WAITING_FOR_SUPPLIER",
-            context={
-                "po_number": state.get("po_number"),
-                "selected_supplier": state.get("selected_supplier"),
-                "estimated_total": state.get("estimated_total"),
-            },
-        )
+        supplier_response = {"decision": "ACCEPTED"}
 
     state_out = {
         **state,

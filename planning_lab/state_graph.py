@@ -128,6 +128,8 @@ class StateGraphRunner:
 
                 current_state = checkpoint.state_name
                 completed_steps = checkpoint.completed_steps.copy()
+                if current_state in completed_steps:
+                    completed_steps.remove(current_state)
 
             elif checkpoint.status == "failed":
                 # Verify if there is still an unresolved failure ticket

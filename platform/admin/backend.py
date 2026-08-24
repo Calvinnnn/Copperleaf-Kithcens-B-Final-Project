@@ -579,6 +579,12 @@ async def _run_graph_agent(agent_id: str, message: str, thread_id: str) -> dict:
     config = GRAPH_AGENTS[agent_id]
     run_id = f"run_{agent_id}_{thread_id}"
 
+    memory_key = f"{agent_id}:{thread_id}"
+    memory_agent = _get_memory_agent(memory_key)
+
+    if message:
+        memory_agent.receive_message(message, role="user")
+
     checkpoint = get_latest_checkpoint(run_id)
     start_fresh = checkpoint is None or checkpoint.status == "completed"
 
@@ -596,17 +602,17 @@ async def _run_graph_agent(agent_id: str, message: str, thread_id: str) -> dict:
                 initial_data=initial_data,
             )
         else:
-            # A run is already in flight for this thread (e.g. waiting on an
-            # external event) — treat this message as a nudge to continue it
-            # rather than silently starting a brand-new, disconnected run.
             final_state = runner.run()
+
+        reply = (
+            f"Your {AGENT_DISPLAY_NAMES[agent_id].lower()} request has been "
+            f"processed: {_friendly_outcome(final_state)}."
+        )
+        memory_agent.receive_message(reply, role="assistant")
 
         return {
             "status": "IDLE",
-            "reply": (
-                f"Your {AGENT_DISPLAY_NAMES[agent_id].lower()} request has been "
-                f"processed: {_friendly_outcome(final_state)}."
-            ),
+            "reply": reply,
             "run_id": run_id,
             "thread_id": thread_id,
         }
@@ -614,26 +620,33 @@ async def _run_graph_agent(agent_id: str, message: str, thread_id: str) -> dict:
     except RunPausedException:
         tasks = get_hitl_tasks(status="pending")
         task = next((t for t in tasks if t.run_id == run_id), None)
+        
+        reply = (
+            "This request needs a manager's sign-off before it can go "
+            "further (it crossed a policy threshold). I've sent it to "
+            "the admin for approval — I'll let you know here as soon "
+            "as they decide."
+        )
+        memory_agent.receive_message(reply, role="assistant")
+
         return {
             "status": "WAITING_FOR_APPROVAL",
-            "reply": (
-                "This request needs a manager's sign-off before it can go "
-                "further (it crossed a policy threshold). I've sent it to "
-                "the admin for approval — I'll let you know here as soon "
-                "as they decide."
-            ),
+            "reply": reply,
             "run_id": run_id,
             "thread_id": thread_id,
             "task_id": task.hitl_task_id if task else None,
         }
 
     except RunFailedException as exc:
+        reply = (
+            f"Something went wrong while processing this request: {exc}. "
+            "A failure ticket has been opened for the admin to investigate."
+        )
+        memory_agent.receive_message(reply, role="assistant")
+
         return {
             "status": "FAILED",
-            "reply": (
-                f"Something went wrong while processing this request: {exc}. "
-                "A failure ticket has been opened for the admin to investigate."
-            ),
+            "reply": reply,
             "run_id": run_id,
             "thread_id": thread_id,
         }
@@ -864,6 +877,18 @@ async def admin_hitl_decision(
         resume_result = _resume_run(
             task.run_id
         )
+
+        if resume_result.get("resume_status") == "completed":
+            parts = task.run_id.split("_", 2)
+            if len(parts) == 3:
+                agent_id = parts[1]
+                thread_id = parts[2]
+                memory_key = f"{agent_id}:{thread_id}"
+                memory_agent = _get_memory_agent(memory_key)
+                
+                friendly = _friendly_outcome(resume_result["state"])
+                reply = f"Update from the admin: {friendly}."
+                memory_agent.receive_message(reply, role="assistant")
 
         return _json(
             {

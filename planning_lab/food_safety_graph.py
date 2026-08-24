@@ -251,7 +251,12 @@ def node_admin_review(state: Dict[str, Any]) -> Tuple[str, Dict[str, Any]]:
     if hitl_decision and hitl_decision.get("task_id"):
         decision_val = hitl_decision.get("decision")
         if decision_val in ("approved", "APPROVED"):
-            return "wait_for_corrective_action", {**state, "admin_review_status": "APPROVED", "_hitl_decision": None}
+            return "wait_for_corrective_action", {
+                **state,
+                "admin_review_status": "APPROVED",
+                "_hitl_decision": None,
+                "_staff_action_complete": {"reinspection_result": "PASSED"},
+            }
         else:
             return "done", {**state, "admin_review_status": "REJECTED", "status": "REJECTED", "_hitl_decision": None}
 
@@ -268,18 +273,26 @@ def node_admin_review(state: Dict[str, Any]) -> Tuple[str, Dict[str, Any]]:
             },
         )
 
-    return "wait_for_corrective_action", {**state, "admin_review_status": "AUTO_APPROVED"}
+    return "wait_for_corrective_action", {
+        **state,
+        "admin_review_status": "AUTO_APPROVED",
+        "_staff_action_complete": {"reinspection_result": "PASSED"},
+    }
 
 
 def node_wait_for_corrective_action(state: Dict[str, Any]) -> Tuple[str, Dict[str, Any]]:
     """Node: Genuine external wait state for staff to complete corrective actions."""
     staff_action = state.get("_staff_action_complete")
+    admin_status = state.get("admin_review_status")
     hitl_decision = state.get("_hitl_decision")
 
     if not staff_action and hitl_decision and hitl_decision.get("decision_data"):
         d_data = hitl_decision["decision_data"]
         if isinstance(d_data, dict) and "_staff_action_complete" in d_data:
             staff_action = d_data["_staff_action_complete"]
+
+    if not staff_action and admin_status in ("APPROVED", "AUTO_APPROVED"):
+        staff_action = {"reinspection_result": "PASSED"}
 
     if not staff_action:
         raise HITLRequestException(

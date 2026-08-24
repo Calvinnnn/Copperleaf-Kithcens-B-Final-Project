@@ -741,24 +741,29 @@ function App() {
                           task.task_id ||
                           task.id;
 
+                        const isApproved = task.status === 'approved';
+                        const isRejected = task.status === 'rejected';
+                        const badgeType = isApproved ? 'green' : isRejected ? 'red' : 'amber';
+                        const borderClass = isApproved ? 'border-emerald-200' : isRejected ? 'border-red-200' : 'border-amber-200';
+
                         return (
                           <div
                             key={
                               taskId ||
                               index
                             }
-                            className="bg-white border border-amber-200 rounded-2xl p-5 shadow-sm"
+                            className={`bg-white border ${borderClass} rounded-2xl p-5 shadow-sm`}
                           >
                             <div className="flex items-start justify-between gap-4">
                               <div>
                                 <div className="flex items-center gap-2 mb-2">
-                                  <UserCheck className="w-5 h-5 text-amber-600" />
+                                  <UserCheck className={`w-5 h-5 ${isApproved ? 'text-emerald-600' : isRejected ? 'text-red-600' : 'text-amber-600'}`} />
 
                                   <h3 className="font-bold">
                                     HITL Task
                                   </h3>
 
-                                  <Badge type="amber">
+                                  <Badge type={badgeType}>
                                     {task.status ||
                                       'pending'}
                                   </Badge>
