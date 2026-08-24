@@ -151,7 +151,21 @@ class StateGraphRunner:
                 completed_steps = checkpoint.completed_steps.copy()
 
             elif checkpoint.status == "completed":
-                return checkpoint.state_data
+                if initial_state:
+                    # Force start a fresh cycle on an already-completed run
+                    current_state = initial_state
+                    state_data = initial_data or {}
+                    completed_steps = []
+                    create_checkpoint(
+                        run_id=self.run_id,
+                        graph_id=self.graph.graph_id,
+                        state_name=current_state,
+                        state_data=state_data,
+                        completed_steps=completed_steps,
+                        status="active",
+                    )
+                else:
+                    return checkpoint.state_data
             else:
                 # Active/Normal checkpoint resume
                 current_state = checkpoint.state_name
